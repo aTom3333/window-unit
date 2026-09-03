@@ -35,9 +35,8 @@
   :group 'windows)
 
 (defcustom window-unit-single-window-commands
-  '(;; Changing a pane's buffer means the group is done, and landing on a
-    ;; member means its group belongs in that window.  Both fall out of
-    ;; folding, so these need no advice of their own.
+  '(;; So the group's slot is a reuse candidate; dedication hides it otherwise.
+    display-buffer
     previous-buffer
     next-buffer
     balance-windows
@@ -51,17 +50,14 @@
     window-layout-rotate-anticlockwise
     window-layout-flip-leftright
     window-layout-flip-topdown)
-  "Commands that see a unit as the one window it stands for.
+  "Functions that see a unit as the one window it stands for.
 Each runs with every unit on the frame folded into a single window and the
-groups put back afterwards, so a command that shuffles, exchanges or balances
-windows treats a group as one slot instead of as its panes.
+groups put back afterwards.  A group whose slot the function took is left
+dormant.
 
-Commands that only move point belong nowhere near this list: `other-window' and
-the `windmove' family need to see the panes, and folding would defeat them.
-Nothing about a command says which kind it is, so it has to be declared.
-
-Only built-in commands are listed.  A configuration using a window package is
-expected to add that package's equivalents.  A command need not be defined yet."
+Functions that only move point belong nowhere near this list: they need to see
+the panes.  Nothing about a function says which kind it is, so it has to be
+declared.  Only built-ins are listed, and a name need not be defined yet."
   :type '(repeat function)
   ;; The default is installed without calling :set, which is not defined yet.
   :initialize #'custom-initialize-default
@@ -123,6 +119,19 @@ A live ROOT yields just itself, which is what the callers that hand one expect."
   (let (panes)
     (walk-window-subtree (lambda (window) (push window panes)) root)
     (nreverse panes)))
+
+(defun window-unit--ephemeral-p (buffer)
+  "Non-nil when BUFFER is internal, its name starting with a space."
+  (and (bufferp buffer) (string-prefix-p " " (buffer-name buffer))))
+
+(defun window-unit--ephemeral-argument-p (args)
+  "Non-nil when the first of ARGS names an internal buffer.
+Only `display-buffer' takes a buffer there; the rest take a count or a
+window."
+  (let ((first (car args)))
+    (and (or (bufferp first) (stringp first))
+         (let ((buffer (get-buffer first)))
+           (and buffer (window-unit--ephemeral-p buffer))))))
 
 (defun window-unit--pane-p (window)
   "Non-nil when WINDOW is a pane this library put a unit in."
@@ -450,10 +459,6 @@ already dissolved cannot leave a dedicated window behind."
 ;;; ---------------------------------------------------------------------------
 ;;; Policy: what switching to or from a unit means
 
-(defun window-unit--ephemeral-p (buffer)
-  "Non-nil when BUFFER is internal, its name starting with a space.
-Such a buffer being shown is never a deliberate switch."
-  (and (bufferp buffer) (string-prefix-p " " (buffer-name buffer))))
 
 (defun window-unit--switch-advice (original buffer-or-name &rest args)
   "Route `switch-to-buffer' so a unit behaves as one buffer.
@@ -602,8 +607,12 @@ folded into, and that window."
       (when window (select-window window)))))
 
 (defun window-unit--single-window-advice (original &rest args)
-  "Run ORIGINAL with every unit folded into the one window it stands for."
-  (if (null window-unit--registry)
+  "Run ORIGINAL with every unit folded into the one window it stands for.
+A unit whose slot ORIGINAL took is left dormant."
+  (if (or (null window-unit--registry)
+          (window-unit--ephemeral-argument-p args))
+      ;; Folding for an internal buffer would delete panes its own code may
+      ;; still be holding.
       (apply original args)
     (let ((selected (and (window-unit-at (selected-window))
                          (window-buffer (selected-window))))

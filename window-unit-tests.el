@@ -232,18 +232,17 @@ it in both windows, which is what Emacs does for any buffer."
         (should-not (window-parameter window 'window-atom))
         (should (window-unit-footprint unit))))))
 
-(ert-deftest window-unit-same-window-display-cannot-take-a-pane ()
-  "`display-buffer-same-window' is turned away by a pane's dedication.
-It is the one display action the atomic group alone does not deflect, so
-without dedication it would land in a pane and read as a displacement."
+(ert-deftest window-unit-same-window-display-takes-the-group-place ()
+  "`display-buffer-same-window' from inside a group takes the group's slot."
   (window-unit-test--with-clean-frame
     (let ((unit (window-unit-test--build-pi)))
       (select-window (window-unit-test--window "chat"))
-      (let ((window (display-buffer (get-buffer-create "x")
-                                    '(display-buffer-same-window))))
-        (window-unit--settle-all)
-        (should-not (eq window (window-unit-test--window "chat")))
-        (should (window-unit-footprint unit))))))
+      (display-buffer (get-buffer-create "x") '(display-buffer-same-window))
+      (window-unit--settle-all)
+      (should-not (window-unit-footprint unit))
+      (should (equal (window-unit-test--shape) '(h random x)))
+      (should (buffer-live-p (get-buffer "chat")))
+      (should (buffer-live-p (get-buffer "input"))))))
 
 (ert-deftest window-unit-quitting-a-pane-dismisses-the-group ()
   "`quit-window' in a pane takes the whole group off screen, not one pane."
@@ -962,6 +961,65 @@ and the command saw the panes."
                               (push window leftover)))
                           nil nil t)
         (should-not leftover)))))
+
+
+(ert-deftest window-unit-a-pop-up-can-take-the-group-place ()
+  "A pop-up reusing a window sees a group as the one window it is."
+  (window-unit-test--with-clean-frame
+    (set-window-buffer (selected-window) (get-buffer-create "chat"))
+    (let* ((right (split-window (selected-window) nil 'right))
+           (bottom (split-window (selected-window) nil 'below))
+           unit)
+      (set-window-buffer bottom (get-buffer-create "input"))
+      (set-window-buffer right (get-buffer-create "random"))
+      (setq unit (window-unit-adopt (list (window-unit-test--window "chat")
+                                          (window-unit-test--window "input"))))
+      (select-window (window-unit-test--window "random"))
+      (display-buffer (get-buffer-create "x"))
+      (window-unit--settle-all)
+      (should (equal (window-unit-test--shape) '(h x random)))
+      (should-not (window-unit-footprint unit))
+      (should (buffer-live-p (get-buffer "chat")))
+      (should (buffer-live-p (get-buffer "input"))))))
+
+(ert-deftest window-unit-a-pop-up-from-inside-leaves-the-group-whole ()
+  "A pop-up raised from inside a group takes another window, not the group's."
+  (window-unit-test--with-clean-frame
+    (set-window-buffer (selected-window) (get-buffer-create "chat"))
+    (let* ((right (split-window (selected-window) nil 'right))
+           (bottom (split-window (selected-window) nil 'below))
+           unit)
+      (set-window-buffer bottom (get-buffer-create "input"))
+      (set-window-buffer right (get-buffer-create "random"))
+      (setq unit (window-unit-adopt (list (window-unit-test--window "chat")
+                                          (window-unit-test--window "input"))))
+      (select-window (window-unit-test--window "input"))
+      (display-buffer (get-buffer-create "x"))
+      (window-unit--settle-all)
+      (should (window-unit-footprint unit))
+      (should (equal (window-unit-test--shape)
+                     '(h (v chat@! input@!) x))))))
+
+
+(ert-deftest window-unit-an-ephemeral-pop-up-does-not-fold-the-group ()
+  "Displaying an internal buffer leaves the group's windows alone."
+  (window-unit-test--with-clean-frame
+    (let ((unit (window-unit-test--build-pi))
+          panes)
+      ;; hold both pane windows, the way a hint library holds the window it
+      ;; means to go back to
+      (setq panes (list (window-unit-test--window "chat")
+                        (window-unit-test--window "input")))
+      ;; and display from outside the group, so folding would not keep them
+      (select-window (window-unit-test--window "random"))
+      (display-buffer (get-buffer-create " *hint*"))
+      (window-unit--settle-all)
+      (should (cl-every #'window-live-p panes))
+      (should (window-unit-footprint unit))
+      ;; the hint window is legitimately still on the frame; what matters is
+      ;; that the group was not touched
+      (should (equal (window-unit-test--shape (window-unit-footprint unit))
+                     '(v chat@! input@!))))))
 
 
 (provide 'window-unit-tests)
