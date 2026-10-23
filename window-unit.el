@@ -289,6 +289,7 @@ contains something else too."
          (null (cl-set-exclusive-or windows (window-unit--panes root) :test #'eq))
          root)))
 
+;;;###autoload
 (defun window-unit-adopt (windows)
   "Make the buffers shown in WINDOWS one unit, in place.
 WINDOWS must be exactly the live windows of one region of the window tree, so
@@ -554,7 +555,12 @@ repaired does not stop the others from being looked at."
   (when (and window-unit--registry
              (not window-unit--folding)
              (zerop (minibuffer-depth)))
-    (let ((units (copy-sequence window-unit--registry)))
+    (let ((units (copy-sequence window-unit--registry))
+          ;; Laying a group out again puts its stash back, selection and all,
+          ;; and a window one of its members was strewn into may be deleted
+          ;; outright.  Neither is a reason to move the reader, so we remember
+          ;; the buffer they are standing in and hand it the selection back.
+          (standing (window-buffer (selected-window))))
       ;; A unit losing its place goes first, so one claiming a place lands in a
       ;; window that is already ordinary.
       (dolist (unit units)
@@ -566,7 +572,11 @@ repaired does not stop the others from being looked at."
       (dolist (unit units)
         (with-demoted-errors "window-unit: %S"
           (when (memq unit window-unit--registry)
-            (window-unit--settle unit frame)))))))
+            (window-unit--settle unit frame))))
+      (when-let* (((buffer-live-p standing))
+                  (window (get-buffer-window standing frame))
+                  ((not (eq window (selected-window)))))
+        (select-window window 'norecord)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Presenting as one window
@@ -605,6 +615,23 @@ folded into, and that window."
   (when (buffer-live-p selected)
     (let ((window (get-buffer-window selected)))
       (when window (select-window window)))))
+
+(defun window-unit--display-advice (original buffer-or-name &rest args)
+  "Show a member by summoning its group, the way switching to one does.
+Much of Emacs shows a buffer through `display-buffer' rather than by switching
+to it, and a member shown on its own would leave the group it belongs to
+dormant behind it.  A group is one thing however it is asked for, so the
+window this answers with is the member's, inside the whole group."
+  (let* ((buffer (and (or (bufferp buffer-or-name) (stringp buffer-or-name))
+                      (get-buffer buffer-or-name)))
+         (unit (and buffer
+                    ;; Folding shows buffers of its own while a group is taken
+                    ;; apart, which is no time to put one back together.
+                    (not window-unit--folding)
+                    (not (window-unit--ephemeral-p buffer))
+                    (window-unit-of buffer))))
+    (or (and unit (window-unit-summon unit buffer))
+        (apply original buffer-or-name args))))
 
 (defun window-unit--single-window-advice (original &rest args)
   "Run ORIGINAL with every unit folded into the one window it stands for.
@@ -682,13 +709,17 @@ costs nothing while none exists."
           (unless (member entry window-persistent-parameters)
             (push entry window-persistent-parameters)
             (push entry window-unit--added-parameters)))
-        (window-unit-refresh-single-window-commands))
+        (window-unit-refresh-single-window-commands)
+        ;; After the folding advices, so this one wraps them: a member is
+        ;; summoned rather than shown in a window of a folded group.
+        (advice-add 'display-buffer :around #'window-unit--display-advice))
     ;; Let every unit go first: the advices and the settling pass are about to
     ;; leave, and a group still marked and dedicated would have nothing behind
     ;; it and no gesture that recovers it.
     (dolist (unit (copy-sequence window-unit--registry))
       (window-unit-dissolve unit))
     (advice-remove 'switch-to-buffer #'window-unit--switch-advice)
+    (advice-remove 'display-buffer #'window-unit--display-advice)
     (advice-remove 'delete-other-windows
                    #'window-unit--delete-other-windows-advice)
     (remove-hook 'window-buffer-change-functions #'window-unit--settle-all)

@@ -854,6 +854,99 @@ different member current and `switch-to-buffer' lied about what it returned."
           (should (eq (current-buffer) (get-buffer "chat")))
           (should (eq (window-buffer (selected-window)) (get-buffer "chat"))))))))
 
+(ert-deftest window-unit-settling-leaves-the-reader-where-the-command-did ()
+  "Putting a scattered group back together must not move the reader.
+Its stash records whichever member was selected when it was taken, and
+`window-state-put' acts on that, so a pass that let it stand would carry the
+reader off to another member of a group it was only tidying up."
+  (window-unit-test--with-clean-frame
+    (window-unit-test--build-pi)
+    ;; Stashed while `chat' was the member standing in.
+    (select-window (window-unit-test--window "chat"))
+    (window-unit--restash (window-unit-of (get-buffer "chat")))
+    ;; Strewn about, with the reader in the other member.
+    (window-unit-test--rotate)
+    (window-unit-test--rotate)
+    (select-window (window-unit-test--window "input"))
+    (window-unit--settle-all)
+    (should (equal (buffer-name (window-buffer (selected-window))) "input"))))
+
+(ert-deftest window-unit-displaying-a-member-summons-its-group ()
+  "A member shown through `display-buffer' comes back with its group.
+Much of Emacs shows a buffer that way rather than switching to it, so a member
+displayed on its own would leave its group dormant and answer with a window
+that is not part of it."
+  (window-unit-test--with-clean-frame
+    (window-unit-test--build-pi)
+    (select-window (window-unit-test--window "chat"))
+    ;; Something else takes the group's place.
+    (window-unit-test--switch (get-buffer-create "a"))
+    (should-not (window-unit-test--window "input"))
+
+    (let ((window (display-buffer (get-buffer "input")
+                                  '((display-buffer-same-window)))))
+      (should (eq (window-buffer window) (get-buffer "input")))
+      ;; The whole group, not one pane of it.
+      (should (window-unit-test--window "chat")))))
+
+(ert-deftest window-unit-popping-to-a-member-stands-the-reader-in-it ()
+  "`pop-to-buffer' leaves the reader in the member, which is what a jump needs.
+It selects whatever window `display-buffer' answers with, and going back to
+where a jump came from is a `pop-to-buffer' of the buffer it came from."
+  (window-unit-test--with-clean-frame
+    (window-unit-test--build-pi)
+    (select-window (window-unit-test--window "input"))
+    (window-unit-test--switch (get-buffer-create "a"))
+    (pop-to-buffer (get-buffer "input") '((display-buffer-same-window)))
+    (window-unit--settle-all)
+    (should (equal (buffer-name (window-buffer (selected-window))) "input"))
+    (should (window-unit-test--window "chat"))))
+
+(ert-deftest window-unit-a-member-summoned-through-a-display-action-is-current ()
+  "The same, for a reader whose `switch-to-buffer' obeys display actions.
+It then reaches `display-buffer', which is one of the functions that see a unit
+as one window, so the summon happens inside a fold the switch knows nothing
+about."
+  (let ((switch-to-buffer-obey-display-actions t))
+    (window-unit-test--with-clean-frame
+      (set-window-buffer (selected-window) (get-buffer-create "chat"))
+      (let* ((top (selected-window))
+             (bottom (split-window top nil 'below)))
+        (set-window-buffer bottom (get-buffer-create "input"))
+        (window-unit-adopt (list top bottom)))
+      (select-window (window-unit-test--window "chat"))
+      (window-unit-test--switch (get-buffer-create "a"))
+      (let* ((left (selected-window))
+             (right (split-window left nil 'right)))
+        (set-window-buffer right (get-buffer-create "b"))
+        (window-unit-adopt (list left right)))
+      (window-unit-test--switch (get-buffer "input"))
+      (should (equal (buffer-name (window-buffer (selected-window))) "input"))
+      (should (equal (buffer-name (current-buffer)) "input")))))
+
+(ert-deftest window-unit-a-member-summoned-from-inside-another-group-is-current ()
+  "Coming back to a group from inside another one lands on the member asked for.
+The group giving up its place collapses first and the one coming back is laid
+out from its stash, whose own idea of what was selected says nothing about what
+is being asked for."
+  (window-unit-test--with-clean-frame
+    (set-window-buffer (selected-window) (get-buffer-create "chat"))
+    (let* ((top (selected-window))
+           (bottom (split-window top nil 'below)))
+      (set-window-buffer bottom (get-buffer-create "input"))
+      (window-unit-adopt (list top bottom)))
+    ;; Displaced from `chat', so the stash records `chat' as selected.
+    (select-window (window-unit-test--window "chat"))
+    (window-unit-test--switch (get-buffer-create "a"))
+    ;; A group of its own takes that place, so the way back is out of a group.
+    (let* ((left (selected-window))
+           (right (split-window left nil 'right)))
+      (set-window-buffer right (get-buffer-create "b"))
+      (window-unit-adopt (list left right)))
+    (window-unit-test--switch (get-buffer "input"))
+    (should (eq (window-buffer (selected-window)) (get-buffer "input")))
+    (should (eq (current-buffer) (get-buffer "input")))))
+
 (ert-deftest window-unit-at-never-names-a-unit-that-does-not-own-the-pane ()
   "A pane marked for one unit holding another unit's buffer is not that unit's.
 The marker says \"a pane of something\" and the buffer's back-pointer says
