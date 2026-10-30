@@ -1055,6 +1055,63 @@ and the command saw the panes."
                           nil nil t)
         (should-not leftover)))))
 
+(defun window-unit-test--marked-windows ()
+  "Every window on the frame carrying a unit marking or a dedication."
+  (let (marked)
+    (walk-window-tree (lambda (window)
+                        (when (or (window-parameter window 'window-unit)
+                                  (window-parameter window 'window-atom)
+                                  (and (window-live-p window)
+                                       (window-dedicated-p window)))
+                          (push window marked)))
+                      nil nil t)
+    marked))
+
+(ert-deftest window-unit-a-configuration-outliving-its-unit-leaves-no-marks ()
+  "Putting back a configuration whose unit died leaves ordinary windows.
+A configuration keeps every window parameter and the dedication, so it brings
+back the panes of a unit that no longer exists."
+  (window-unit-test--with-clean-frame
+    (window-unit-test--build-pi)
+    (let ((saved (current-window-configuration)))
+      (kill-buffer (get-buffer "chat"))
+      (kill-buffer (get-buffer "input"))
+      ;; how a tab switch puts its windows back, placeholders and all
+      (let ((window-restore-killed-buffer-windows
+             #'tab-bar-select-restore-windows))
+        (set-window-configuration saved))
+      (window-unit--settle-all)
+      (should-not window-unit--registry)
+      (should-not (window-unit-test--marked-windows)))))
+
+(ert-deftest window-unit-a-configuration-outliving-a-dissolve-leaves-no-marks ()
+  "The same holds when the unit was dissolved and its buffers are still alive."
+  (window-unit-test--with-clean-frame
+    (let* ((unit (window-unit-test--build-pi))
+           (saved (current-window-configuration)))
+      (window-unit-dissolve unit)
+      (set-window-configuration saved)
+      (window-unit--settle-all)
+      (should-not (window-unit-of (get-buffer "chat")))
+      (should-not (window-unit-test--marked-windows)))))
+
+(ert-deftest window-unit-releasing-a-dead-unit-keeps-foreign-dedication ()
+  "Clearing a dead unit's panes leaves a window dedicated by someone else."
+  (window-unit-test--with-clean-frame
+    (let* ((unit (window-unit-test--build-pi))
+           (saved (current-window-configuration)))
+      (window-unit-dissolve unit)
+      (set-window-configuration saved)
+      ;; a package takes one of the replayed panes for a buffer of its own
+      (let ((pane (window-unit-test--window "chat")))
+        (set-window-parameter pane 'window-unit nil)
+        (set-window-dedicated-p pane nil)
+        (set-window-buffer pane (get-buffer-create "other"))
+        (set-window-dedicated-p pane t))
+      (window-unit--settle-all)
+      (should (equal (window-unit-test--marked-windows)
+                     (list (window-unit-test--window "other")))))))
+
 
 (ert-deftest window-unit-a-pop-up-can-take-the-group-place ()
   "A pop-up reusing a window sees a group as the one window it is."

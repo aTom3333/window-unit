@@ -539,6 +539,28 @@ nothing is lost by acting immediately."
           (window-unit--put unit target (window-buffer target)))))
      (t (window-unit-dissolve unit)))))
 
+(defun window-unit--orphan-p (window)
+  "Non-nil when WINDOW is marked for a unit that no longer exists."
+  (let ((id (window-parameter window 'window-unit)))
+    (and id (not (cl-find id window-unit--registry :key #'window-unit-id)))))
+
+(defun window-unit--release-orphans (&optional frame)
+  "Clear the markings of every window on FRAME whose unit no longer exists.
+A window configuration keeps every parameter and the dedication, so putting
+one back can mark windows for a unit dissolved since it was saved."
+  (dolist (window (window-list frame 'no-mini))
+    (when (window-unit--orphan-p window)
+      (let ((id (window-parameter window 'window-unit)))
+        ;; Only the windows carrying the dead id lose their dedication: a
+        ;; window dedicated for its own reasons keeps it.
+        (walk-window-subtree
+         (lambda (pane)
+           (when (eql id (window-parameter pane 'window-unit))
+             (set-window-parameter pane 'window-unit nil)
+             (when (window-live-p pane) (set-window-dedicated-p pane nil)))
+           (set-window-parameter pane 'window-atom nil))
+         (or (window-atom-root window) window) t)))))
+
 (defun window-unit--settle-all (&optional frame)
   "Settle every unit on FRAME, once the current interaction has finished.
 Runs from `window-buffer-change-functions', so only when a window was actually
@@ -550,33 +572,37 @@ undone before the session ends.  Waiting makes a rearrangement late, not wrong.
 We also stay out while units are folded for a command, whose half-finished frame
 is nobody's idea of a state to repair.
 
-Each unit is settled inside its own `with-demoted-errors', so one that cannot be
-repaired does not stop the others from being looked at."
-  (when (and window-unit--registry
-             (not window-unit--folding)
+Windows still marked for a unit that no longer exists are cleared first, even
+when no unit is left.  Each unit is then settled inside its own
+`with-demoted-errors', so one that cannot be repaired does not stop the others
+from being looked at."
+  (when (and (not window-unit--folding)
              (zerop (minibuffer-depth)))
-    (let ((units (copy-sequence window-unit--registry))
-          ;; Laying a group out again puts its stash back, selection and all,
-          ;; and a window one of its members was strewn into may be deleted
-          ;; outright.  Neither is a reason to move the reader, so we remember
-          ;; the buffer they are standing in and hand it the selection back.
-          (standing (window-buffer (selected-window))))
-      ;; A unit losing its place goes first, so one claiming a place lands in a
-      ;; window that is already ordinary.
-      (dolist (unit units)
-        (with-demoted-errors "window-unit: %S"
-          (when (and (memq unit window-unit--registry)
-                     (eq 'clobbered
-                         (plist-get (window-unit--survey unit frame) :state)))
-            (window-unit--settle unit frame))))
-      (dolist (unit units)
-        (with-demoted-errors "window-unit: %S"
-          (when (memq unit window-unit--registry)
-            (window-unit--settle unit frame))))
-      (when-let* (((buffer-live-p standing))
-                  (window (get-buffer-window standing frame))
-                  ((not (eq window (selected-window)))))
-        (select-window window 'norecord)))))
+    (window-unit--release-orphans frame)
+    (when window-unit--registry
+      (let ((units (copy-sequence window-unit--registry))
+            ;; Laying a group out again puts its stash back, selection and
+            ;; all, and a window one of its members was strewn into may be
+            ;; deleted outright.  Neither is a reason to move the reader, so
+            ;; we remember the buffer they are standing in and hand it the
+            ;; selection back.
+            (standing (window-buffer (selected-window))))
+        ;; A unit losing its place goes first, so one claiming a place lands
+        ;; in a window that is already ordinary.
+        (dolist (unit units)
+          (with-demoted-errors "window-unit: %S"
+            (when (and (memq unit window-unit--registry)
+                       (eq 'clobbered
+                           (plist-get (window-unit--survey unit frame) :state)))
+              (window-unit--settle unit frame))))
+        (dolist (unit units)
+          (with-demoted-errors "window-unit: %S"
+            (when (memq unit window-unit--registry)
+              (window-unit--settle unit frame))))
+        (when-let* (((buffer-live-p standing))
+                    (window (get-buffer-window standing frame))
+                    ((not (eq window (selected-window)))))
+          (select-window window 'norecord))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Presenting as one window
