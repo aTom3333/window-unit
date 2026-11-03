@@ -15,7 +15,7 @@
 ;;; Fixture
 
 (defconst window-unit-test--buffer-names
-  '("random" "chat" "input" "x" "y" "other" "ctl" "a" "b" " *hint*")
+  '("random" "chat" "input" "x" "y" "other" "ctl" "a" "b" " *hint*" "*Help*")
   "Buffers the tests create, killed between them so names stay predictable.")
 
 (defun window-unit-test--reset ()
@@ -328,6 +328,115 @@ it in both windows, which is what Emacs does for any buffer."
       (window-unit--settle-all)
       (should (equal (window-unit-test--shape) '(h random x)))
       (should-not (window-unit-footprint unit)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Previews through display actions
+
+(defmacro window-unit-test--obeying-display-actions (&rest body)
+  "Run BODY with `switch-to-buffer' going through `display-buffer'.
+The alist entry is one a configuration typically has for a pop-up buffer."
+  (declare (indent 0) (debug t))
+  `(let ((switch-to-buffer-obey-display-actions t)
+         (display-buffer-alist
+          '(("\\*Help\\*" (display-buffer-reuse-window
+                           display-buffer-pop-up-window)))))
+     ,@body))
+
+(defun window-unit-test--consult-preview (&rest buffers)
+  "Preview BUFFERS the way `consult--buffer-preview' does.
+Each candidate is shown from the window the session started in, whatever the
+previous one selected, and the settling pass runs inside the session."
+  (let ((window (selected-window)))
+    (cl-letf (((symbol-function 'minibuffer-depth) (lambda () 1)))
+      (dolist (buffer buffers)
+        (with-selected-window window
+          (switch-to-buffer buffer 'norecord))
+        (window-unit--settle-all)))))
+
+(ert-deftest window-unit-obeying-preview-from-inside-restores-the-group ()
+  "Abandoning a preview started in a pane leaves the group as it was."
+  (window-unit-test--obeying-display-actions
+    (window-unit-test--with-clean-frame
+      (window-unit-test--build-pi)
+      (select-window (window-unit-test--window "input"))
+      (window-unit-test--consult-preview (get-buffer-create "x")
+                                         (get-buffer-create "y")
+                                         (get-buffer "input"))
+      (window-unit--settle-all)
+      (should (equal (window-unit-test--shape)
+                     '(h random (v chat@! input@!)))))))
+
+(ert-deftest window-unit-obeying-preview-from-inside-takes-the-place ()
+  "A candidate previewed from a pane takes the whole of the group's place."
+  (window-unit-test--obeying-display-actions
+    (window-unit-test--with-clean-frame
+      (window-unit-test--build-pi)
+      (select-window (window-unit-test--window "input"))
+      (window-unit-test--consult-preview (get-buffer-create "x"))
+      (should (equal (window-unit-test--shape) '(h random x))))))
+
+(ert-deftest window-unit-obeying-preview-from-outside-restores-the-group ()
+  "Abandoning a preview started beside the group leaves the group as it was."
+  (window-unit-test--obeying-display-actions
+    (window-unit-test--with-clean-frame
+      (window-unit-test--build-pi)
+      (select-window (window-unit-test--window "random"))
+      (window-unit-test--consult-preview (get-buffer-create "x")
+                                         (get-buffer "chat")
+                                         (get-buffer-create "y")
+                                         (get-buffer "random"))
+      (window-unit--settle-all)
+      (should (equal (window-unit-test--shape)
+                     '(h random (v chat@! input@!)))))))
+
+(ert-deftest window-unit-obeying-pop-up-preview-from-outside-keeps-the-group ()
+  "Previewing a buffer the alist pops up, from beside the group, spares it."
+  (window-unit-test--obeying-display-actions
+    (window-unit-test--with-clean-frame
+      (let ((unit (window-unit-test--build-pi)))
+        (select-window (window-unit-test--window "random"))
+        (window-unit-test--consult-preview (get-buffer-create "*Help*")
+                                           (get-buffer "random"))
+        (window-unit--settle-all)
+        (should (window-unit-footprint unit))
+        (should (window-unit-test--window "random"))))))
+
+(ert-deftest window-unit-obeying-pop-up-preview-from-inside-keeps-the-group ()
+  "Previewing a buffer the alist pops up, from a pane, spares the group."
+  (window-unit-test--obeying-display-actions
+    (window-unit-test--with-clean-frame
+      (let ((unit (window-unit-test--build-pi)))
+        (select-window (window-unit-test--window "input"))
+        (window-unit-test--consult-preview (get-buffer-create "*Help*")
+                                           (get-buffer "input"))
+        (window-unit--settle-all)
+        (should (window-unit-footprint unit))))))
+
+(ert-deftest window-unit-obeying-preview-of-a-dormant-member-shows-it ()
+  "Previewing a member of a dormant unit shows its whole group."
+  (window-unit-test--obeying-display-actions
+    (window-unit-test--with-clean-frame
+      (window-unit-test--build-pi)
+      (select-window (window-unit-test--window "chat"))
+      (window-unit-test--switch (get-buffer-create "x"))
+      (select-window (window-unit-test--window "random"))
+      (window-unit-test--consult-preview (get-buffer "chat"))
+      (should (equal (window-unit-test--shape)
+                     '(h (v chat@! input@!) x))))))
+
+(ert-deftest window-unit-obeying-preview-of-a-dormant-member-abandoned ()
+  "Abandoning a preview that showed a dormant unit sends it away again."
+  (window-unit-test--obeying-display-actions
+    (window-unit-test--with-clean-frame
+      (window-unit-test--build-pi)
+      (select-window (window-unit-test--window "chat"))
+      (window-unit-test--switch (get-buffer-create "x"))
+      (select-window (window-unit-test--window "random"))
+      (window-unit-test--consult-preview (get-buffer "chat")
+                                         (get-buffer-create "y")
+                                         (get-buffer "random"))
+      (window-unit--settle-all)
+      (should (equal (window-unit-test--shape) '(h random x))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; What the group remembers
