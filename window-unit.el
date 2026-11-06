@@ -35,8 +35,7 @@
   :group 'windows)
 
 (defcustom window-unit-single-window-commands
-  '(;; So the group's slot is a reuse candidate; dedication hides it otherwise.
-    display-buffer
+  '(;; `switch-to-prev-buffer' signals in a dedicated pane.
     previous-buffer
     next-buffer
     balance-windows
@@ -659,6 +658,37 @@ window this answers with is the member's, inside the whole group."
     (or (and unit (window-unit-summon unit buffer))
         (apply original buffer-or-name args))))
 
+(defun window-unit--lift-dedication-advice (original &rest args)
+  "Run ORIGINAL with a unit's slot open to the buffer being shown.
+Called from inside a pane, only that pane's dedication is lifted, so a buffer
+shown in the same window takes the group's place and a pop-up lands beside it.
+Called from outside, every pane's is, so the group's slot can be reused like any
+window.  A pane that received the buffer hands it the group's whole place."
+  (if (or (null window-unit--registry)
+          window-unit--folding
+          (window-unit--ephemeral-argument-p args))
+      (apply original args)
+    (let ((here (window-unit-at (selected-window)))
+          lifted units)
+      (dolist (unit (if here (list here) window-unit--registry))
+        (let ((root (window-unit--ensure-group unit (selected-frame))))
+          (when root
+            (push unit units)
+            (dolist (pane (if here
+                              (list (selected-window))
+                            (window-unit--panes root)))
+              (when (window-dedicated-p pane)
+                (set-window-dedicated-p pane nil)
+                (push pane lifted))))))
+      (unwind-protect (apply original args)
+        (dolist (pane lifted)
+          (when (window-live-p pane) (set-window-dedicated-p pane t)))
+        ;; A preview has to show the real arrangement, so we settle at once,
+        ;; inside a minibuffer session too.
+        (dolist (unit units)
+          (with-demoted-errors "window-unit: %S"
+            (window-unit--settle unit (selected-frame))))))))
+
 (defun window-unit--single-window-advice (original &rest args)
   "Run ORIGINAL with every unit folded into the one window it stands for.
 A unit whose slot ORIGINAL took is left dormant."
@@ -736,6 +766,8 @@ costs nothing while none exists."
             (push entry window-persistent-parameters)
             (push entry window-unit--added-parameters)))
         (window-unit-refresh-single-window-commands)
+        (advice-add 'display-buffer :around
+                    #'window-unit--lift-dedication-advice)
         ;; After the folding advices, so this one wraps them: a member is
         ;; summoned rather than shown in a window of a folded group.
         (advice-add 'display-buffer :around #'window-unit--display-advice))
@@ -746,6 +778,7 @@ costs nothing while none exists."
       (window-unit-dissolve unit))
     (advice-remove 'switch-to-buffer #'window-unit--switch-advice)
     (advice-remove 'display-buffer #'window-unit--display-advice)
+    (advice-remove 'display-buffer #'window-unit--lift-dedication-advice)
     (advice-remove 'delete-other-windows
                    #'window-unit--delete-other-windows-advice)
     (remove-hook 'window-buffer-change-functions #'window-unit--settle-all)

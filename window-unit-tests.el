@@ -1259,6 +1259,22 @@ back the panes of a unit that no longer exists."
       (should (equal (window-unit-test--shape)
                      '(h (v chat@! input@!) x))))))
 
+(ert-deftest window-unit-a-pop-up-keeps-the-pane-it-was-raised-from ()
+  "The pane a pop-up was raised from is still the same window afterwards.
+A package such as xref remembers that window to jump back into it, so a group
+rebuilt around the pop-up sends the jump into whichever pane got the window."
+  (window-unit-test--with-clean-frame
+    (set-window-buffer (selected-window) (get-buffer-create "chat"))
+    (let ((right (split-window (selected-window) nil 'right)))
+      (set-window-buffer right (get-buffer-create "input"))
+      (let ((unit (window-unit-adopt (list (selected-window) right))))
+        (select-window right)
+        (display-buffer (get-buffer-create "x"))
+        (window-unit--settle-all)
+        (should (window-live-p right))
+        (should (eq (window-buffer right) (get-buffer "input")))
+        (should (window-unit-footprint unit))))))
+
 
 (ert-deftest window-unit-an-ephemeral-pop-up-does-not-fold-the-group ()
   "Displaying an internal buffer leaves the group's windows alone."
